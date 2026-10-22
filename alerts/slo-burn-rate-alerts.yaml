@@ -1,0 +1,86 @@
+# SLO burn-rate alerts — the multi-window, multi-burn-rate pattern from the
+# Google SRE Workbook ("Alerting on SLOs").
+#
+# SLO: 99.9% availability over a rolling 30 days for job="demo-app".
+# Error budget ratio = 1 - 0.999 = 0.001.
+# Burn rate = observed error ratio / budget ratio. A burn rate of 1 consumes
+# the whole 30-day budget in exactly 30 days; 14.4 consumes 2% of it in 1 hour.
+#
+# Each alert pairs a long window (is this real?) with a short window (is it
+# still happening?) so it fires fast on genuine burns and resets quickly once
+# the burn stops — instead of paging on a single spike or a stale average.
+#
+#   burn   long/short   budget consumed      action
+#   14.4   1h  / 5m     2%  in 1 hour        page   (severity: critical)
+#    6     6h  / 30m    5%  in 6 hours       page   (severity: critical)
+#    3     1d  / 2h    10%  in 1 day         ticket (severity: warning)
+#    1     3d  / 6h    10%  in 3 days        ticket (severity: warning)
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: slo-burn-rate-alerts
+  namespace: monitoring
+  labels:
+    app: kube-prometheus-stack
+    release: monitoring
+    prometheus: platform
+spec:
+  groups:
+    - name: slo.demo-app.alerts
+      rules:
+        - alert: SLOFastBurn
+          expr: |
+            job:http_error_ratio:rate1h{job="demo-app"} > (14.4 * 0.001)
+            and
+            job:http_error_ratio:rate5m{job="demo-app"} > (14.4 * 0.001)
+          for: 2m
+          labels:
+            severity: critical
+            slo: demo-app-availability
+            team: platform
+          annotations:
+            summary: "SLO fast burn: demo-app is consuming its error budget 14.4x too fast"
+            description: "The 1h and 5m error ratios are both above 14.4x the 99.9% SLO budget (0.001). At this rate 2% of the 30-day error budget burns in 1 hour. Current 1h error ratio: {{ $value | humanizePercentage }}."
+            runbook_url: "https://github.com/venkateswarlu429/k8s-observability-platform/blob/main/runbooks/slo-fast-burn.md"
+        - alert: SLOSlowBurnPage
+          expr: |
+            job:http_error_ratio:rate6h{job="demo-app"} > (6 * 0.001)
+            and
+            job:http_error_ratio:rate30m{job="demo-app"} > (6 * 0.001)
+          for: 15m
+          labels:
+            severity: critical
+            slo: demo-app-availability
+            team: platform
+          annotations:
+            summary: "SLO slow burn (paging): demo-app error budget burning 6x too fast"
+            description: "The 6h and 30m error ratios are both above 6x the 99.9% SLO budget (0.001). At this rate 5% of the 30-day error budget burns in 6 hours. Current 6h error ratio: {{ $value | humanizePercentage }}."
+            runbook_url: "https://github.com/venkateswarlu429/k8s-observability-platform/blob/main/runbooks/slo-fast-burn.md"
+        - alert: SLOBurnTicketFast
+          expr: |
+            job:http_error_ratio:rate1d{job="demo-app"} > (3 * 0.001)
+            and
+            job:http_error_ratio:rate2h{job="demo-app"} > (3 * 0.001)
+          for: 1h
+          labels:
+            severity: warning
+            slo: demo-app-availability
+            team: platform
+          annotations:
+            summary: "SLO burn ticket: demo-app error budget burning 3x too fast"
+            description: "The 1d and 2h error ratios are both above 3x the 99.9% SLO budget (0.001). At this rate 10% of the 30-day error budget burns in 1 day. Not paging-worthy yet, but file a ticket and investigate today. Current 1d error ratio: {{ $value | humanizePercentage }}."
+            runbook_url: "https://github.com/venkateswarlu429/k8s-observability-platform/blob/main/runbooks/slo-fast-burn.md"
+        - alert: SLOBurnTicketSlow
+          expr: |
+            job:http_error_ratio:rate3d{job="demo-app"} > (1 * 0.001)
+            and
+            job:http_error_ratio:rate6h{job="demo-app"} > (1 * 0.001)
+          for: 3h
+          labels:
+            severity: warning
+            slo: demo-app-availability
+            team: platform
+          annotations:
+            summary: "SLO burn ticket: demo-app is on pace to exhaust its error budget"
+            description: "The 3d and 6h error ratios are both above 1x the 99.9% SLO budget (0.001). Sustained, this consumes the entire 30-day error budget (10% in 3 days). Review recent changes and error patterns before the next release. Current 3d error ratio: {{ $value | humanizePercentage }}."
+            runbook_url: "https://github.com/venkateswarlu429/k8s-observability-platform/blob/main/runbooks/slo-fast-burn.md"

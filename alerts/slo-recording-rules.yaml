@@ -1,0 +1,85 @@
+# Recording rules that turn raw request metrics into the SLI time series the
+# burn-rate alerts and the SLO dashboard consume.
+#
+# SLI definition (availability):  good events = requests with status < 500
+#                                 total events = all requests
+#                                 error ratio = 5xx rate / total rate
+#
+# The target workload is selected by job="demo-app" — the label the demo
+# ServiceMonitor stamps on every scraped series (see demo/manifests).
+# To adopt this for another service, change the job selector (or add one
+# rule set per job) and adjust the SLO in slo-burn-rate-alerts.yaml.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: slo-recording-rules
+  namespace: monitoring
+  labels:
+    app: kube-prometheus-stack
+    # Must carry the Helm release label or kube-prometheus-stack's
+    # Prometheus will not select this PrometheusRule.
+    release: monitoring
+    prometheus: platform
+spec:
+  groups:
+    - name: slo.demo-app.recording
+      interval: 30s
+      rules:
+        # Error ratio over every window the multi-window alerts need.
+        # Naming follows the Prometheus recording-rule convention:
+        #   <job>:<metric>:<operation><window>
+        - record: job:http_error_ratio:rate5m
+          expr: |
+            sum by (job) (rate(http_requests_total{job="demo-app",status=~"5.."}[5m]))
+            /
+            sum by (job) (rate(http_requests_total{job="demo-app"}[5m]))
+        - record: job:http_error_ratio:rate30m
+          expr: |
+            sum by (job) (rate(http_requests_total{job="demo-app",status=~"5.."}[30m]))
+            /
+            sum by (job) (rate(http_requests_total{job="demo-app"}[30m]))
+        - record: job:http_error_ratio:rate1h
+          expr: |
+            sum by (job) (rate(http_requests_total{job="demo-app",status=~"5.."}[1h]))
+            /
+            sum by (job) (rate(http_requests_total{job="demo-app"}[1h]))
+        - record: job:http_error_ratio:rate2h
+          expr: |
+            sum by (job) (rate(http_requests_total{job="demo-app",status=~"5.."}[2h]))
+            /
+            sum by (job) (rate(http_requests_total{job="demo-app"}[2h]))
+        - record: job:http_error_ratio:rate6h
+          expr: |
+            sum by (job) (rate(http_requests_total{job="demo-app",status=~"5.."}[6h]))
+            /
+            sum by (job) (rate(http_requests_total{job="demo-app"}[6h]))
+        - record: job:http_error_ratio:rate1d
+          expr: |
+            sum by (job) (rate(http_requests_total{job="demo-app",status=~"5.."}[1d]))
+            /
+            sum by (job) (rate(http_requests_total{job="demo-app"}[1d]))
+        - record: job:http_error_ratio:rate3d
+          expr: |
+            sum by (job) (rate(http_requests_total{job="demo-app",status=~"5.."}[3d]))
+            /
+            sum by (job) (rate(http_requests_total{job="demo-app"}[3d]))
+        - record: job:http_error_ratio:rate30d
+          expr: |
+            sum by (job) (rate(http_requests_total{job="demo-app",status=~"5.."}[30d]))
+            /
+            sum by (job) (rate(http_requests_total{job="demo-app"}[30d]))
+        # Fraction of the 30-day error budget still available, 1.0 = untouched,
+        # 0 = exhausted. Computed directly from the counters (not from the
+        # rules above) so it is correct on the first evaluation cycle.
+        # SLO = 99.9% -> total error budget ratio = 0.001.
+        - record: slo:error_budget_remaining:ratio30d
+          expr: |
+            clamp_min(
+              1 - (
+                sum by (job) (rate(http_requests_total{job="demo-app",status=~"5.."}[30d]))
+                /
+                sum by (job) (rate(http_requests_total{job="demo-app"}[30d]))
+                / 0.001
+              ),
+              0
+            )

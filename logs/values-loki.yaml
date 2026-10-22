@@ -1,0 +1,83 @@
+# Loki — lightweight log aggregation for the observability platform.
+#
+# Chart:    grafana/loki, version 7.3.0 (pinned)
+# Release:  loki, namespace: monitoring
+#
+#   helm repo add grafana https://grafana.github.io/helm-charts
+#   helm upgrade --install loki grafana/loki --version 7.3.0 \
+#     -n monitoring -f logs/values-loki.yaml
+#
+# Deployment mode: SingleBinary — one process, filesystem storage. This is
+# deliberately the *small* topology (kind/minikube/small clusters, demos).
+# The scale-out path is the same chart with deploymentMode: SimpleScalable
+# (or Distributed) plus S3/GCS object storage — the labels, retention and
+# datasource wiring in this repo do not change.
+deploymentMode: SingleBinary
+
+loki:
+  # Single-tenant cluster-internal use. Turn auth on (and set a tenant per
+  # namespace) before exposing Loki beyond the platform team.
+  auth_enabled: false
+
+  commonConfig:
+    replication_factor: 1
+
+  storage:
+    type: filesystem
+
+  schemaConfig:
+    configs:
+      - from: "2024-01-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+
+  limits_config:
+    # 7 days of logs in-cluster: enough to correlate with the burn-rate
+    # alerts and last week's deploy, small enough for one 10Gi PVC.
+    # Prometheus keeps 15d of metrics; logs are the expensive signal, so
+    # they get the shorter leash.
+    retention_period: 168h
+    reject_old_samples: true
+    reject_old_samples_max_age: 168h
+
+  compactor:
+    retention_enabled: true
+    delete_request_store: filesystem
+
+singleBinary:
+  replicas: 1
+  persistence:
+    enabled: true
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# SimpleScalable/Distributed components — unused in SingleBinary mode.
+write:
+  replicas: 0
+read:
+  replicas: 0
+backend:
+  replicas: 0
+
+# No gateway: promtail and Grafana talk to the single-binary Service
+# directly (http://loki.monitoring.svc.cluster.local:3100).
+gateway:
+  enabled: false
+
+# No object storage, no caches — filesystem mode for a self-contained demo.
+minio:
+  enabled: false
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false

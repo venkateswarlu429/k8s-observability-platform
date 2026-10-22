@@ -1,0 +1,137 @@
+# Platform alerts: workload, node and observability-health rules that
+# complement the SLO alerts. These watch *symptoms in the infrastructure*;
+# the SLO burn-rate alerts in slo-burn-rate-alerts.yaml watch *user impact*.
+# Both layers matter — platform alerts usually explain the burn alert.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: platform-alerts
+  namespace: monitoring
+  labels:
+    app: kube-prometheus-stack
+    release: monitoring
+    prometheus: platform
+spec:
+  groups:
+    - name: platform.workloads
+      rules:
+        - alert: PodCrashLooping
+          expr: |
+            sum by (namespace, pod, container) (
+              increase(kube_pod_container_status_restarts_total[1h])
+            ) > 3
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} (container {{ $labels.container }}) is crash looping"
+            description: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} restarted {{ printf \"%.0f\" $value }} times in the last hour. Check the previous container's logs (kubectl logs --previous) and the pod's events before restarting anything else."
+            runbook_url: "https://github.com/venkateswarlu429/k8s-observability-platform/blob/main/runbooks/pod-crashlooping.md"
+        - alert: DeploymentReplicasUnavailable
+          expr: |
+            kube_deployment_spec_replicas
+            - kube_deployment_status_replicas_available > 0
+          for: 15m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} is missing {{ printf \"%.0f\" $value }} replicas"
+            description: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} has had fewer available replicas than desired for 15 minutes. Look for failing rollouts, unschedulable pods (Pending), image pull errors or resource quota exhaustion."
+            runbook_url: "https://github.com/venkateswarlu429/k8s-observability-platform/blob/main/README.md#alert-catalog"
+    - name: platform.nodes
+      rules:
+        - alert: NodeHighCPUUsage
+          expr: |
+            (1 - avg by (node) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) * 100 > 85
+          for: 15m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Node {{ $labels.node }} CPU usage is above 85%"
+            description: "Node {{ $labels.node }} has averaged {{ printf \"%.1f\" $value }}% CPU usage for 15 minutes. Check the top pods by CPU on the node and whether requests/limits are sane before adding capacity."
+            runbook_url: "https://github.com/venkateswarlu429/k8s-observability-platform/blob/main/README.md#alert-catalog"
+        - alert: NodeHighMemoryUsage
+          expr: |
+            (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+          for: 15m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Node {{ $labels.node }} memory usage is above 90%"
+            description: "Node {{ $labels.node }} has less than 10% memory available for 15 minutes. Identify memory-heavy pods; without limits they can trigger the OOM killer or MemoryPressure evictions."
+            runbook_url: "https://github.com/venkateswarlu429/k8s-observability-platform/blob/main/README.md#alert-catalog"
+        - alert: NodeMemoryPressure
+          expr: |
+            kube_node_status_condition{condition="MemoryPressure", status="true"} == 1
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Node {{ $labels.node }} is under MemoryPressure"
+            description: "kubelet on node {{ $labels.node }} reports MemoryPressure: it is reclaiming memory and may start evicting pods. Find and bound the largest memory consumers on the node, or cordon and drain it if usage does not drop."
+            runbook_url: "https://github.com/venkateswarlu429/k8s-observability-platform/blob/main/README.md#alert-catalog"
+    - name: platform.storage
+      rules:
+        - alert: PersistentVolumeFillingUp
+          expr: |
+            (
+              kubelet_volume_stats_available_bytes
+              / kubelet_volume_stats_capacity_bytes
+            ) * 100 < 15
+            and
+            kubelet_volume_stats_used_bytes > 0
+          for: 15m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Persistent volume {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} is filling up"
+            description: "Volume {{ $labels.persistentvolumeclaim }} ({{ $labels.namespace }}) has less than 15% space available ({{ printf \"%.1f\" $value }}% free). Grow the PVC, prune data, or shorten retention before it hits the critical threshold."
+            runbook_url: "https://github.com/venkateswarlu429/k8s-observability-platform/blob/main/README.md#alert-catalog"
+        - alert: PersistentVolumeAlmostFull
+          expr: |
+            (
+              kubelet_volume_stats_available_bytes
+              / kubelet_volume_stats_capacity_bytes
+            ) * 100 < 5
+            and
+            kubelet_volume_stats_used_bytes > 0
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Persistent volume {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} is almost full"
+            description: "Volume {{ $labels.persistentvolumeclaim }} ({{ $labels.namespace }}) has less than 5% space available ({{ printf \"%.1f\" $value }}% free). Writes will start failing imminently — expand the volume or free space now."
+            runbook_url: "https://github.com/venkateswarlu429/k8s-observability-platform/blob/main/README.md#alert-catalog"
+    - name: platform.observability
+      rules:
+        - alert: KubeStateMetricsDown
+          expr: |
+            up{job="kube-state-metrics"} == 0
+            or
+            absent(up{job="kube-state-metrics"})
+          for: 10m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "kube-state-metrics is down — Kubernetes object metrics are stale"
+            description: "Prometheus has not scraped kube-state-metrics for 10 minutes. Every rule and dashboard built on kube_* metrics (deployments, pods, nodes, PVCs) is now blind. Check the kube-state-metrics pod and its RBAC in the monitoring namespace."
+            runbook_url: "https://github.com/venkateswarlu429/k8s-observability-platform/blob/main/README.md#alert-catalog"
+        - alert: TargetDown
+          expr: |
+            up{job!~"kube-state-metrics|prometheus|alertmanager|node-exporter"} == 0
+          for: 15m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Scrape target {{ $labels.job }} ({{ $labels.instance }}) is down"
+            description: "Prometheus has failed to scrape {{ $labels.namespace }}/{{ $labels.service }} (instance {{ $labels.instance }}) for 15 minutes. The target may be down, its ServiceMonitor selector may have drifted, or network policy may be blocking the scrape."
+            runbook_url: "https://github.com/venkateswarlu429/k8s-observability-platform/blob/main/README.md#alert-catalog"

@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Helm — charts are pulled at install time, never vendored
+charts/
+*.tgz
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Local cluster scratch
+kubeconfig
+*.local.yaml

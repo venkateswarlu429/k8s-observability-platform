@@ -1,0 +1,37 @@
+# Promtail — the log shipper. One DaemonSet pod per node tails container
+# logs from the kubelet's log directory and pushes them to Loki.
+#
+# Chart:    grafana/promtail, version 6.17.1 (pinned)
+# Release:  promtail, namespace: monitoring
+#
+#   helm upgrade --install promtail grafana/promtail --version 6.17.1 \
+#     -n monitoring -f logs/values-promtail.yaml
+#
+# NOTE: Promtail is in maintenance mode upstream; Grafana Alloy is its
+# successor. This repo keeps Promtail because it is tiny, well understood,
+# and its label model maps 1:1 to what the Grafana Explore queries in the
+# README expect. Migrating = swapping this DaemonSet for Alloy with the
+# same discovery relabeling; Loki and Grafana don't change.
+config:
+  clients:
+    # Matches the Loki service from logs/values-loki.yaml (gateway disabled,
+    # so pushes go straight to the single-binary service on :3100).
+    - url: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
+  snippets:
+    pipelineStages:
+      # Container runtime logs arrive in CRI format; unpack them first.
+      - cri: {}
+    # The chart's default scrape config already discovers pods via the
+    # Kubernetes API and attaches the labels that matter for correlation:
+    #   namespace, pod, container, app, job (= namespace/container)
+    # Resist adding more labels (pod name is already the practical limit):
+    # every unique label combination is a new Loki stream, and stream
+    # cardinality is what kills Loki — not log volume.
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi

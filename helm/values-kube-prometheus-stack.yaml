@@ -1,0 +1,236 @@
+# =============================================================================
+# kube-prometheus-stack — production values override
+#
+# Chart:    prometheus-community/kube-prometheus-stack
+# Version:  92.11.0 (pinned — see README "Install" for the exact commands)
+# Release:  monitoring, namespace: monitoring
+#
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+#     --version 92.11.0 -n monitoring --create-namespace \
+#     -f helm/values-kube-prometheus-stack.yaml
+#
+# Everything cluster-specific lives in this file: sizing, retention, alert
+# routing, and the sidecars that pick up this repo's dashboards/datasources.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Prometheus server
+# -----------------------------------------------------------------------------
+prometheus:
+  enabled: true
+  prometheusSpec:
+    # 15 days of local retention is the sweet spot for an in-cluster
+    # Prometheus: long enough for the 30d SLO windows to be meaningful on a
+    # fresh install within weeks, cheap enough for a single PVC. For real
+    # long-term storage, pair this with Thanos/mimir remote_write instead of
+    # growing the local disk forever.
+    retention: 15d
+    retentionSize: 45GB
+    walCompression: true
+    scrapeInterval: 30s
+    evaluationInterval: 30s
+    # Never expose the admin API (snapshot/delete series) on a shared cluster.
+    enableAdminAPI: false
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 50Gi
+          # storageClassName: gp3        # <- set for EKS/AKS/GKE
+
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+
+    # Discover ServiceMonitors / PodMonitors / Probes / PrometheusRules in
+    # ALL namespaces, not just `monitoring`. The Helm-release label selector
+    # still applies (objects must carry `release: monitoring`), which is the
+    # guardrail that keeps random tenants from injecting scrape jobs.
+    serviceMonitorSelectorNilUsesHelmValues: true
+    serviceMonitorNamespaceSelector: {}
+    podMonitorSelectorNilUsesHelmValues: true
+    podMonitorNamespaceSelector: {}
+    probeSelectorNilUsesHelmValues: true
+    probeNamespaceSelector: {}
+    ruleSelectorNilUsesHelmValues: true
+    ruleNamespaceSelector: {}
+
+# -----------------------------------------------------------------------------
+# Alertmanager — routes by severity to Slack.
+#
+# The Slack webhook URL is a SECRET, never a value in git:
+#   kubectl -n monitoring create secret generic alertmanager-slack-webhook \
+#     --from-literal=webhook-url='https://hooks.slack.com/services/XXX/YYY/ZZZ'
+# alertmanagerSpec.secrets mounts it, and the receivers below read the URL
+# from the mounted file (api_url_file) so it never enters the rendered config.
+# -----------------------------------------------------------------------------
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    retention: 120h
+    secrets:
+      - alertmanager-slack-webhook
+    storage:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 2Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: slack-warnings
+      group_by: ["alertname", "namespace"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 6h
+      routes:
+        - receiver: slack-critical
+          matchers:
+            - severity = "critical"
+          repeat_interval: 2h
+        - receiver: slack-warnings
+          matchers:
+            - severity = "warning"
+          repeat_interval: 12h
+    receivers:
+      - name: slack-critical
+        slack_configs:
+          - api_url_file: /etc/alertmanager/secrets/alertmanager-slack-webhook/webhook-url
+            channel: "#alerts-critical"
+            send_resolved: true
+            title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
+            text: >-
+              {{ range .Alerts }}{{ .Annotations.summary }}
+              {{ .Annotations.description }}
+              {{ end }}
+      - name: slack-warnings
+        slack_configs:
+          - api_url_file: /etc/alertmanager/secrets/alertmanager-slack-webhook/webhook-url
+            channel: "#alerts-warnings"
+            send_resolved: true
+            title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
+            text: >-
+              {{ range .Alerts }}{{ .Annotations.summary }}
+              {{ .Annotations.description }}
+              {{ end }}
+    inhibit_rules:
+      # A firing critical mutes the warning twin of the same alert so the
+      # channel gets one conversation, not two.
+      - source_matchers:
+          - severity = "critical"
+        target_matchers:
+          - severity = "warning"
+        equal: ["alertname", "namespace"]
+
+# -----------------------------------------------------------------------------
+# Grafana — dashboards and datasources arrive as labelled ConfigMaps
+# (Grafana sidecars watch the `monitoring` namespace):
+#   dashboards:   label grafana_dashboard="1"   (manifests/dashboards/)
+#   datasources:  label grafana_datasource="1"  (logs/grafana-datasource-loki.yaml)
+#
+# Admin credentials come from a Secret you create, not from values:
+#   kubectl -n monitoring create secret generic grafana-admin-credentials \
+#     --from-literal=admin-user=admin --from-literal=admin-password='<strong-password>'
+# -----------------------------------------------------------------------------
+grafana:
+  enabled: true
+  admin:
+    existingSecret: grafana-admin-credentials
+    userKey: admin-user
+    passwordKey: admin-password
+  persistence:
+    enabled: true
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  grafana.ini:
+    analytics:
+      check_for_updates: false
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: monitoring
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+    datasources:
+      enabled: true
+      label: grafana_datasource
+      labelValue: "1"
+      searchNamespace: monitoring
+      defaultDatasourceEnabled: true
+
+# -----------------------------------------------------------------------------
+# Exporters
+# -----------------------------------------------------------------------------
+nodeExporter:
+  enabled: true
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+kubeStateMetrics:
+  enabled: true
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Keep the chart's curated default rules on (api/etcd/kubelet/node alerts).
+# They complement — not replace — the custom rules in alerts/.
+defaultRules:
+  create: true
+
+# -----------------------------------------------------------------------------
+# Managed control planes (EKS / AKS / GKE): the API-server-scheduler/etcd
+# components below cannot be scraped there. If your renders on EKS show
+# perpetually-down kube-etcd / kube-scheduler targets, disable them:
+#   kubeEtcd:            { enabled: false }
+#   kubeScheduler:       { enabled: false }
+#   kubeControllerManager: { enabled: false }
+# -----------------------------------------------------------------------------

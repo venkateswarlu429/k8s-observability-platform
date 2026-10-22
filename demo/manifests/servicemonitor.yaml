@@ -1,0 +1,25 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: demo-app
+  namespace: demo
+  labels:
+    app: demo-app
+    # kube-prometheus-stack only discovers ServiceMonitors that carry the
+    # release label of the Helm release (release name used in README: monitoring)
+    release: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: demo-app
+  namespaceSelector:
+    matchNames:
+      - demo
+  # Copy the Service's `job` label ("demo-app") onto every scraped series,
+  # giving a stable job identity for recording rules and dashboards.
+  jobLabel: job
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s

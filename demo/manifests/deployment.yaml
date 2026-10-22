@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app
+  namespace: demo
+  labels:
+    app: demo-app
+    app.kubernetes.io/name: demo-app
+    app.kubernetes.io/part-of: observability-demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: demo-app
+  template:
+    metadata:
+      labels:
+        app: demo-app
+        app.kubernetes.io/name: demo-app
+    spec:
+      containers:
+        - name: demo-app
+          # Build it yourself:  docker build -t demo-app:0.1.0 demo/app
+          # kind/minikube users: load the image into the cluster, or point
+          # this at any registry you control.
+          image: demo-app:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            # Fraction of /work requests that return HTTP 500. Raise it
+            # (e.g. "0.5") to watch the SLO burn-rate alerts fire.
+            - name: ERROR_RATE
+              value: "0.02"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi

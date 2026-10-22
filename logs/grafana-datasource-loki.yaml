@@ -1,0 +1,25 @@
+# Loki as a Grafana datasource, provisioned the same way as the dashboards:
+# a ConfigMap carrying the label the Grafana *datasource* sidecar watches
+# for (see grafana.sidecar.datasources in helm/values-kube-prometheus-stack.yaml).
+#
+#   kubectl apply -f logs/grafana-datasource-loki.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasource-loki
+  namespace: monitoring
+  labels:
+    grafana_datasource: "1"
+    app.kubernetes.io/part-of: observability-platform
+data:
+  loki-datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://loki.monitoring.svc.cluster.local:3100
+        isDefault: false
+        editable: true
+        jsonData:
+          maxLines: 1000
